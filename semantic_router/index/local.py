@@ -1,108 +1,88 @@
-from typing import List, Optional, Tuple
-
-import numpy as np
-
-from semantic_router.index.base import BaseIndex
+from typing import List, Tuple
 from semantic_router.linear import similarity_matrix, top_scores
 
-
-class LocalIndex(BaseIndex):
-    def __init__(
-        self,
-        index: Optional[np.ndarray] = None,
-        routes: Optional[np.ndarray] = None,
-        utterances: Optional[np.ndarray] = None,
-    ):
-        super().__init__(index=index, routes=routes, utterances=utterances)
-        self.type = "local"
-
-    class Config:
-        # Stop pydantic from complaining about Optional[np.ndarray]type hints.
-        arbitrary_types_allowed = True
-
-    def add(
-        self, embeddings: List[List[float]], routes: List[str], utterances: List[str]
-    ):
-        embeds = np.array(embeddings)  # type: ignore
-        routes_arr = np.array(routes)
-        if isinstance(utterances[0], str):
-            utterances_arr = np.array(utterances)
-        else:
-            utterances_arr = np.array(utterances, dtype=object)
-        if self.index is None:
-            self.index = embeds  # type: ignore
-            self.routes = routes_arr
-            self.utterances = utterances_arr
-        else:
-            self.index = np.concatenate([self.index, embeds])
-            self.routes = np.concatenate([self.routes, routes_arr])
-            self.utterances = np.concatenate([self.utterances, utterances_arr])
-
-    def get_routes(self) -> List[Tuple]:
+class LocalIndex:
+    def __init__(self, index: np.ndarray = None, routes: List[str] = None, utterances: List[str] = None):
         """
-        Gets a list of route and utterance objects currently stored in the index.
+        Initialize the LocalIndex class.
+
+        Args:
+            index (np.ndarray, optional): The index array. Defaults to None.
+            routes (List[str], optional): The routes list. Defaults to None.
+            utterances (List[str], optional): The utterances list. Defaults to None.
+        """
+        self.index = index
+        self.routes = routes
+        self.utterances = utterances
+
+    def add(self, route: str, utterance: str, vector: np.ndarray):
+        """
+        Add a new route, utterance, and vector to the index.
+
+        Args:
+            route (str): The route to add.
+            utterance (str): The utterance to add.
+            vector (np.ndarray): The vector to add.
+        """
+        if self.index is None:
+            self.index = vector.reshape(1, -1)
+            self.routes = [route]
+            self.utterances = [utterance]
+        else:
+            self.index = np.vstack([self.index, vector])
+            self.routes.append(route)
+            self.utterances.append(utterance)
+
+    def get_routes(self) -> List[Tuple[str, str]]:
+        """
+        Get the routes and utterances stored in the index.
 
         Returns:
-            List[Tuple]: A list of (route_name, utterance) objects.
+            List[Tuple[str, str]]: A list of tuples containing the route and utterance.
         """
-        if self.routes is None or self.utterances is None:
-            raise ValueError("No routes have been added to the index.")
         return list(zip(self.routes, self.utterances))
 
     def describe(self) -> dict:
+        """
+        Describe the index.
+
+        Returns:
+            dict: A dictionary containing the index type, dimensions, and number of vectors.
+        """
         return {
-            "type": self.type,
+            "type": "local",
             "dimensions": self.index.shape[1] if self.index is not None else 0,
             "vectors": self.index.shape[0] if self.index is not None else 0,
         }
 
-    def query(self, vector: np.ndarray, top_k: int = 5) -> Tuple[np.ndarray, List[str]]:
+    def query(self, query_vector: np.ndarray, top_k: int = 5) -> Tuple[List[float], List[str]]:
         """
-        Search the index for the query and return top_k results.
+        Query the index with a vector and return the top k routes and their similarity scores.
+
+        Args:
+            query_vector (np.ndarray): The vector to query the index with.
+            top_k (int, optional): The number of top routes to return. Defaults to 5.
+
+        Returns:
+            Tuple[List[float], List[str]]: A tuple containing the top k similarity scores and routes.
         """
-        if self.index is None or self.routes is None:
-            raise ValueError("Index or routes are not populated.")
-        sim = similarity_matrix(vector, self.index)
-        # extract the index values of top scoring vectors
-        scores, idx = top_scores(sim, top_k)
-        # get routes from index values
-        route_names = self.routes[idx].copy()
-        return scores, route_names
+        if self.index is None:
+            raise ValueError("Index is not populated.")
+        sim_matrix = similarity_matrix(query_vector, self.index)
+        scores, indices = top_scores(sim_matrix, top_k)
+        routes = [self.routes[i] for i in indices]
+        return scores, routes
 
     def delete(self, route_name: str):
         """
-        Delete all records of a specific route from the index.
-        """
-        if (
-            self.index is not None
-            and self.routes is not None
-            and self.utterances is not None
-        ):
-            delete_idx = self._get_indices_for_route(route_name=route_name)
-            self.index = np.delete(self.index, delete_idx, axis=0)
-            self.routes = np.delete(self.routes, delete_idx, axis=0)
-            self.utterances = np.delete(self.utterances, delete_idx, axis=0)
-        else:
-            raise ValueError(
-                "Attempted to delete route records but either index, routes or "
-                "utterances is None."
-            )
+        Delete a route and its associated utterance from the index.
 
-    def delete_index(self):
+        Args:
+            route_name (str): The name of the route to delete.
         """
-        Deletes the index, effectively clearing it and setting it to None.
-        """
-        self.index = None
-
-    def _get_indices_for_route(self, route_name: str):
-        """Gets an array of indices for a specific route."""
         if self.routes is None:
             raise ValueError("Routes are not populated.")
-        idx = [i for i, route in enumerate(self.routes) if route == route_name]
-        return idx
-
-    def __len__(self):
-        if self.index is not None:
-            return self.index.shape[0]
-        else:
-            return 0
+        delete_idx = [i for i, route in enumerate(self.routes) if route == route_name]
+        self.index = np.delete(self.index, delete_idx, axis=0)
+        self.routes = [route for route in self.routes if route != route_name]
+        self.utterances = [utterance for utterance in self.utterances if self.routes[i] != route_name]
